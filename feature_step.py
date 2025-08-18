@@ -4,60 +4,107 @@ from typing import List, Tuple, Dict
 import numpy as np
 import pandas as pd
 from sklearn.metrics import f1_score
+from sklearn.model_selection import StratifiedKFold
 import matplotlib.pyplot as plt
+from pandas.api.types import is_numeric_dtype, is_bool_dtype
 
 # ===== 듀얼 임포트: 패키지 실행 우선, ▶ 실패 시 단일 실행 =====
 try:
     from . import preprocess as pre
     # [CHANGED] basemodel을 우선 사용(동일 API)
-    from . import basemodel as mlp  # [CHANGED]
+    from . import basemodel as mlp  
     from . import mlp_eva as eva
+    from . import feature_store as sf 
 except ImportError:
     CUR_DIR = os.path.dirname(os.path.abspath(__file__))
     if CUR_DIR not in sys.path:
         sys.path.insert(0, CUR_DIR)
-    import src.preprocess as pre
-    import basemodel as mlp  # [CHANGED]
+    import preprocess as pre
+    import basemodel as mlp  
     import mlp_eva as eva
+    import feature_store as sf
 
 # ===== 비교 목록 =====
+# # 원시 그대로
+# Case_1 = ['AGE', 'SEX', 'SBP', 'DBP', 'SMOKE', 'ALCHOL', 'PHY_ACT',
+#           'GLUCOSE', 'Hb', 'CR', 'AST', 'ALT', 'RGTP', "T_CHOL", "HDL", "LDL", "TG"]
+# # Hb', 'Cr' 제외
+# Case_2 = ['AGE', 'SEX', 'SBP', 'DBP', 'SMOKE', 'ALCHOL', 'PHY_ACT', 
+#         'GLUCOSE', 'AST', 'ALT', 'RGTP', "T_CHOL", "HDL", "LDL", "TG"]          
+# # 원시 지질 + 플래그
+# Case_3 = ['AGE', 'SEX', 'SBP', 'DBP', 'SMOKE', 'ALCHOL', 'PHY_ACT', 
+#         'GLUCOSE','AST', 'ALT', 'RGTP', "T_CHOL", "HDL", "LDL", "TG",  
+#         'extreme_GLUCOSE_flag', 'extreme_SBP_flag', 'extreme_DBP_flag']   
+# # 파생 지질 + 플래그
+# Case_4 = ['AGE', 'SEX', 'SBP', 'DBP', 'SMOKE', 'ALCHOL', 'PHY_ACT', 
+#         'GLUCOSE','AST', 'ALT', 'RGTP', 'LDL/HDL', 'AIP', 'Non_HDL',
+#         'extreme_GLUCOSE_flag', 'extreme_SBP_flag', 'extreme_DBP_flag']  
+# # 파생 지질 + 플래그 + liverrisk       
+# Case_5 = ['AGE', 'SEX', 'SBP', 'DBP', 'SMOKE', 'ALCHOL', 'PHY_ACT', 
+#         'GLUCOSE','AST', 'ALT', 'RGTP', 'LDL/HDL', 'AIP', 'Non_HDL', 
+#         'extreme_GLUCOSE_flag', 'extreme_SBP_flag', 'extreme_DBP_flag','extreme_LiverRisk_flag']            
 # 원시 그대로
-Comp_1 = ['AGE', 'SEX', 'SBP', 'DBP', 'SMOKE', 'ALCHOL', 'PHY_ACT',
+Case_1 = ['AGE', 'SEX', 'SBP', 'DBP', 'SMOKE', 'ALCHOL', 'PHY_ACT',
           'GLUCOSE', 'Hb', 'CR', 'AST', 'ALT', 'RGTP', "T_CHOL", "HDL", "LDL", "TG"]
-# Hb', 'Cr' 제외
-Comp_2 = ['AGE', 'SEX', 'SBP', 'DBP', 'SMOKE', 'ALCHOL', 'PHY_ACT', 
-        'GLUCOSE', 'AST', 'ALT', 'RGTP', "T_CHOL", "HDL", "LDL", "TG"]          
-# 원시 지질 + 플래그
-Comp_3 = ['AGE', 'SEX', 'SBP', 'DBP', 'SMOKE', 'ALCHOL', 'PHY_ACT', 
+
+# hb, cr 제외 
+
+Case_2 = ['AGE', 'SEX', 'SBP', 'DBP', 'SMOKE', 'ALCHOL', 'PHY_ACT', 
+        'GLUCOSE', 'AST', 'ALT', 'RGTP', "T_CHOL", "HDL", "LDL", "TG"]
+
+#플래그 3
+
+Case_3 = ['AGE', 'SEX', 'SBP', 'DBP', 'SMOKE', 'ALCHOL', 'PHY_ACT', 
         'GLUCOSE','AST', 'ALT', 'RGTP', "T_CHOL", "HDL", "LDL", "TG",  
-        'extreme_GLUCOSE_flag', 'extreme_SBP_flag', 'extreme_DBP_flag']   
-# 파생 지질 + 플래그
-Comp_4 = ['AGE', 'SEX', 'SBP', 'DBP', 'SMOKE', 'ALCHOL', 'PHY_ACT', 
+        'extreme_GLUCOSE_flag', 'extreme_SBP_flag', 'extreme_DBP_flag']
+#플래그 2
+
+Case_4 = ['AGE', 'SEX', 'SBP', 'DBP', 'SMOKE', 'ALCHOL', 'PHY_ACT', 
+        'GLUCOSE','AST', 'ALT', 'RGTP', "T_CHOL", "HDL", "LDL", "TG",  
+         'extreme_SBP_flag', 'extreme_DBP_flag'] 
+
+# 지질 파생 1
+
+Case_5 = ['AGE', 'SEX', 'SBP', 'DBP', 'SMOKE', 'ALCHOL', 'PHY_ACT', 
         'GLUCOSE','AST', 'ALT', 'RGTP', 'LDL/HDL', 'AIP', 'Non_HDL',
-        'extreme_GLUCOSE_flag', 'extreme_SBP_flag', 'extreme_DBP_flag']  
-# 파생 지질 + 플래그 + liverrisk       
-Comp_5 = ['AGE', 'SEX', 'SBP', 'DBP', 'SMOKE', 'ALCHOL', 'PHY_ACT', 
-        'GLUCOSE','AST', 'ALT', 'RGTP', 'LDL/HDL', 'AIP', 'Non_HDL', 
-        'extreme_GLUCOSE_flag', 'extreme_SBP_flag', 'extreme_DBP_flag','extreme_LiverRisk_flag']  
-# 파생 지질 + 플래그 + liverrisk + BMI
-Comp_6 = ['AGE', 'SEX', 'SBP', 'DBP', 'SMOKE', 'ALCHOL', 'PHY_ACT', 
-        'GLUCOSE','AST', 'ALT', 'RGTP','LDL/HDL', 'AIP', 'Non_HDL',  
-        'extreme_GLUCOSE_flag', 'extreme_SBP_flag', 'extreme_DBP_flag','BMI','extreme_LiverRisk_flag']             
-# 파생 지질 + 플래그 + liverrisk + PAST_HISTORY_SCORE + BMI
-Comp_7 = ['AGE', 'SEX', 'SBP', 'DBP', 'SMOKE', 'ALCHOL', 'PHY_ACT', 
-        'GLUCOSE','AST', 'ALT', 'RGTP','LDL/HDL', 'AIP', 'Non_HDL',  
-        'extreme_GLUCOSE_flag', 'extreme_SBP_flag', 'extreme_DBP_flag','extreme_LiverRisk_flag','PAST_HISTORY_SCORE','BMI']            
+        'extreme_GLUCOSE_flag', 'extreme_SBP_flag', 'extreme_DBP_flag']
+# 지질 파생 2
 
+Case_6 = ['AGE', 'SEX', 'SBP', 'DBP', 'SMOKE', 'ALCHOL', 'PHY_ACT', 
+        'GLUCOSE','AST', 'ALT', 'RGTP','LDL/HDL', 'AIP', 'Non_HDL'  
+        'extreme_SBP_flag', 'extreme_DBP_flag']
 
-STEPS: List[List[str]] = [Comp_1, Comp_2,Comp_3, Comp_4, Comp_5, Comp_6, Comp_7]  
+STEPS = {
+    "Case_1": Case_1,
+    "Case_2": Case_2,
+    "Case_3": Case_3,
+    "Case_4": Case_4,
+    "Case_5": Case_5,
+    "Case_6": Case_6
+} 
 
 TARGET = "PWV"  # 타깃(라벨)
 
 # =====================[ADDED] 시드/기준 상수 =====================
-SEEDS = [17, 42, 1337]          # 3개 시드
+SEEDS = [17, 42, 48]          # 3개 시드 129, 252
 GAP_CUTOFF = 0.15               # |gap| 15% 컷(절대값 기준)
 AUC_MIN, F1_MIN = 0.75, 0.72    # 베이스라인 하한
 # ================================================================
+
+# 시드 고정 유틸
+import random
+def set_all_seeds(sd: int) -> None:
+    random.seed(sd)
+    np.random.seed(sd)
+    try:
+        import torch
+        torch.manual_seed(sd)
+        torch.cuda.manual_seed_all(sd)
+        torch.backends.cudnn.deterministic = True
+        torch.backends.cudnn.benchmark = False
+    except Exception:
+        pass
+
 
 def _train_eval_once(df: pd.DataFrame, target: str, device,
                      lr=1e-3, batch_size=32, epochs=30, patience=2,
@@ -67,7 +114,7 @@ def _train_eval_once(df: pd.DataFrame, target: str, device,
     df: (피처 + target)만 포함한 데이터프레임
     반환: (AUC, F1, extras) — extras에는 과적합 신호/갭 등 기록
     """
-    mlp.set_seed(42)
+    # mlp.set_seed(42)
     # data split/scaling
     train_loader, val_loader, test_loader, input_dim = mlp.data_split(
         df, target_column=target, batch_size=batch_size
@@ -77,15 +124,21 @@ def _train_eval_once(df: pd.DataFrame, target: str, device,
     model = mlp.mlp_model(input_dim, output_dim=2).to(device)
     criterion = torch.nn.CrossEntropyLoss()
     optimizer = torch.optim.Adam(model.parameters(), lr=lr)
-    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(  # [ADDED]
-        optimizer, mode='min', factor=0.5, patience=3
-    )
+    # scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(  # [ADDED]
+    #     optimizer, mode='min', factor=0.5, patience=3
+    # )
 
     # train
     model, train_losses, val_losses = mlp.train_model(
-        model=model, criterion=criterion, optimizer=optimizer,
-        train_loader=train_loader, val_loader=val_loader, device=device,
-        num_epochs=100, patience=8, scheduler=scheduler  # [CHANGED]
+        model=model, 
+        criterion=criterion, 
+        optimizer=optimizer,
+        train_loader=train_loader, 
+        val_loader=val_loader, 
+        device=device,
+        num_epochs=epochs, 
+        patience=patience, 
+        scheduler=None
     )
 
     # evaluate
@@ -100,19 +153,18 @@ def _train_eval_once(df: pd.DataFrame, target: str, device,
 
     return float(auc), float(f1), extras
 
-def run_steps_raw_only(df: pd.DataFrame, steps: List[List[str]], target: str, device,
+def run_steps_raw_only(df: pd.DataFrame, steps: Dict[str, List[str]], target: str, device,
                        lr=1e-3, batch_size=32, epochs=30, patience=2,
                        cumulative: bool = False, print_each: bool = True,
                        check_overfit: bool = True, plot_loss_each: bool = False):
     """
     returns: records = [{"label": "Comp 1", "auc":..., "f1":..., "overfit":..., "gap":...}, ...]
     """
-    mlp.set_seed(42)
+    # mlp.set_seed(42)
     df0 = df.copy()
-
     records = []
-    for i, keep_list in enumerate(steps, start=1):
-        label = f"Case {i}"
+    
+    for label, keep_list in steps.items():
         plan_keep = list(dict.fromkeys(keep_list))
         exist    = [c for c in plan_keep if c in df0.columns]
         use_cols = exist + ([target] if target in df0.columns else [])
@@ -140,7 +192,7 @@ def run_steps_raw_only(df: pd.DataFrame, steps: List[List[str]], target: str, de
     return records
 
 # ===================== multi-seed =====================
-def run_multi_seed_eval(df: pd.DataFrame, steps: List[List[str]], target: str, device,
+def run_multi_seed_eval(df: pd.DataFrame, steps: Dict[str,List[str]], target: str, device,
                         seeds: List[int] = SEEDS, lr=1e-3, batch_size=32, epochs=100, patience=8
                         ) -> Dict[str, List[Dict]]:
     """
@@ -151,7 +203,7 @@ def run_multi_seed_eval(df: pd.DataFrame, steps: List[List[str]], target: str, d
     comp2rows: Dict[str, List[Dict]] = defaultdict(list)
 
     for sd in seeds:
-        mlp.set_seed(sd)
+        set_all_seeds(sd)
         recs = run_steps_raw_only(
             df, steps, target, device,
             lr=lr, batch_size=batch_size, epochs=epochs, patience=patience,
@@ -173,18 +225,22 @@ def print_comp_scores_per_seed(comp2rows: Dict[str, List[Dict]]) -> None:
     Comp n: AUC=..., F1=... | overfit=YES/no, gap=±x.x%
     (Comp별로 시드 수만큼 줄이 반복 출력됨)
     """
-    def comp_idx(lbl: str) -> int:
-        try: return int(lbl.split()[-1])
-        except: return 10**9
 
-    for label in sorted(comp2rows.keys(), key=comp_idx):
+    for label in sorted(comp2rows.keys(), key=_label_numeric_key):
         rows = comp2rows[label]
         for r in rows:
             of = "YES" if r["overfit"] else "no"
             gap_pct = r["gap"] * 100.0
             print(f"{label}: AUC={r['auc']:.4f}, F1={r['f1']:.4f} | overfit={of}, gap={gap_pct:.1f}%")
 
-def aggregate_and_rank(comp2rows: Dict[str, List[Dict]]) -> List[Dict]:
+import re
+def _label_numeric_key(s: str) -> int:
+    m = re.findall(r'\d+', s)
+    return int(m[-1]) if m else 10**9
+
+def aggregate_and_rank(comp2rows: Dict[str, List[Dict]],
+                       std_auc_max: float = 0.02,
+                       std_f1_max: float  = 0.03) -> List[Dict]:
     """
     제외 규칙 적용 → 정렬 결과(남은 후보) 반환.
     제외 규칙:
@@ -227,7 +283,9 @@ def aggregate_and_rank(comp2rows: Dict[str, List[Dict]]) -> List[Dict]:
         a for a in agg
         if a["overfit_rate"] <= (1/3) and
            a["gap_ge_15_rate"] <= (1/3) and
-           a["mean_auc"] >= AUC_MIN and a["mean_f1"] >= F1_MIN
+           a["mean_auc"] >= AUC_MIN and a["mean_f1"] >= F1_MIN and
+           a["std_auc"] <= std_auc_max and
+           a["std_f1"]  <= std_f1_max
     ]
 
     ranked = sorted(
@@ -251,7 +309,7 @@ def print_ranked_remaining(ranked: List[Dict]) -> None:
 
 def plot_results(comp2rows: Dict[str, List[Dict]], plot_title: str) -> None:
 
-    labels = sorted(comp2rows.keys(), key=lambda k: int(k.split()[-1]))
+    labels = sorted(comp2rows.keys(),  key=_label_numeric_key)
     
     mean_aucs = [np.mean([r['auc'] for r in comp2rows[label]]) for label in labels]
     mean_f1s = [np.mean([r['f1'] for r in comp2rows[label]]) for label in labels]
