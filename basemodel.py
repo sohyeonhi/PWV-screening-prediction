@@ -1,11 +1,13 @@
 from sklearn.preprocessing import StandardScaler
-from sklearn.model_selection import train_test_split
+from sklearn.model_selection import train_test_split, StratifiedShuffleSplit
 import torch
 from torch.utils.data import TensorDataset, DataLoader
 import torch.nn as nn
 import matplotlib.pyplot as plt
 import random
 import numpy as np
+import pandas as pd
+from pandas.api.types import is_numeric_dtype, is_bool_dtype
 
 def set_seed(seed=42):
     random.seed(seed)
@@ -16,18 +18,49 @@ def set_seed(seed=42):
     torch.backends.cudnn.deterministic = True
     torch.backends.cudnn.benchmark = False
 
-def data_split(df, target_column, batch_size=32):
+def data_split(df, target_column, batch_size=32,
+               test_size=0.15,       # 전체 대비 test 비율
+               val_size=0.1764706,    # 남은(1-test) 대비 val 비율 = 0.15/0.85
+               random_state: int = 42,
+               fixed_test_idx: np.ndarray | None = None
+               ):
     # 타겟 분리
     x = df.drop(columns=[target_column])
     y = df[target_column]
 
     # 데이터 분할 train 70%, temp (test + valid) 30%
-    X_train, X_temp, y_train, y_temp = train_test_split(
-        x, y, test_size=0.3, random_state=42, shuffle=True, stratify=y
-    )
-    X_val, X_test, y_val, y_test = train_test_split(
-        X_temp, y_temp, test_size=0.5, random_state=42, shuffle=True, stratify=y_temp
-    )
+    if fixed_test_idx is not None:
+        # 고정 테스트 인덱스 사용
+
+        N = len(df)
+        test_idx = np.asarray(fixed_test_idx, dtype=int)
+        if test_idx.ndim != 1 or test_idx.min() < 0 or test_idx.max() >= N:
+            raise ValueError("fixed_test_idx out of range or invalid shape.")
+
+        all_idx = np.arange(N)
+        trainval_idx = np.setdiff1d(all_idx, test_idx)
+
+        # 남은 85%에서 val_size(=0.17647) 비율로 Stratified 분할 → 전체 15%
+        sss_val = StratifiedShuffleSplit(n_splits=1, test_size=val_size, random_state=random_state)
+        (tr_rel, va_rel), = sss_val.split(x.iloc[trainval_idx], y.iloc[trainval_idx])
+
+        tr_idx = trainval_idx[tr_rel]
+        va_idx = trainval_idx[va_rel]
+        te_idx = test_idx
+
+        X_train, y_train = x.iloc[tr_idx], y.iloc[tr_idx]
+        X_val,   y_val   = x.iloc[va_idx], y.iloc[va_idx]
+        X_test,  y_test  = x.iloc[te_idx], y.iloc[te_idx]
+
+    else:
+        # 기존 70/15/15 경로(그대로 유지하되 파라미터 사용)
+        X_train, X_temp, y_train, y_temp = train_test_split(
+            x, y, test_size=(test_size + val_size*(1-test_size)),   # = 0.30
+            random_state=random_state, shuffle=True, stratify=y
+        )
+        X_val, X_test, y_val, y_test = train_test_split(
+            X_temp, y_temp, test_size=0.5, random_state=random_state, shuffle=True, stratify=y_temp
+        )
 
     scaler = StandardScaler()
     X_train_scd = scaler.fit_transform(X_train)
@@ -48,6 +81,64 @@ def data_split(df, target_column, batch_size=32):
     test_loader = DataLoader(TensorDataset(X_test_t, y_test_t), batch_size=batch_size, shuffle=False)
 
     return train_loader, val_loader, test_loader, X_train_t.shape[1]
+
+def data_split_by_index(
+    df: pd.DataFrame,
+    target_column: str,
+    train_idx: np.ndarray,
+    val_idx: np.ndarray,
+    test_idx: np.ndarray,
+    batch_size: int = 32,
+):
+    """
+    K-Fold/커스텀 분할용.
+    - 스케일러는 train fold에만 fit → val/test에 transform (누수 방지)
+    - 숫자형만 사용, target 제외
+    - torch Dataset/DataLoader 반환 스펙은 기존 data_split과 동일
+    반환: (train_loader, val_loader, test_loader, input_dim)
+    """
+
+    # 숫자형만 사용
+    feats = [c for c in df.columns 
+             if c != target_column and (is_numeric_dtype(df[c])or is_bool_dtype(df[c]))
+             ]
+    if len(feats) == 0:
+        raise ValueError("No numeric features after filtering."
+                         f"(cols={list(df.columns)}, target={target_column})"
+                         )
+    
+    X_df = df[feats].copy()
+
+    for c in X_df.columns:
+        if is_bool_dtype(X_df[c]) or str(X_df[c].dtype).lower() in ("boolean", "booleandtype"):
+            X_df[c] = X_df[c].astype("float32").fillna(0.0)
+            
+    
+    X = X_df.astype("float32").to_numpy(dtype=np.float32)
+    y = df[target_column].values.astype(np.int64)
+
+    X_tr, y_tr = X[train_idx], y[train_idx]
+    X_va, y_va = X[val_idx], y[val_idx]
+    X_te, y_te = X[test_idx], y[test_idx]
+
+    # 스케일링: train에 fit → 나머지에 적용
+    scaler = StandardScaler()
+    X_tr = scaler.fit_transform(X_tr)
+    X_va = scaler.transform(X_va)
+    X_te = scaler.transform(X_te)
+
+    # 텐서/로더
+    X_tr_t, y_tr_t = torch.tensor(X_tr), torch.tensor(y_tr)
+    X_va_t, y_va_t = torch.tensor(X_va), torch.tensor(y_va)
+    X_te_t, y_te_t = torch.tensor(X_te), torch.tensor(y_te)
+
+    train_loader = DataLoader(TensorDataset(X_tr_t, y_tr_t), batch_size=batch_size, shuffle=True)
+    val_loader   = DataLoader(TensorDataset(X_va_t, y_va_t), batch_size=batch_size, shuffle=False)
+    test_loader  = DataLoader(TensorDataset(X_te_t, y_te_t), batch_size=batch_size, shuffle=False)
+
+    input_dim = X_tr.shape[1]
+    
+    return train_loader, val_loader, test_loader, input_dim
 
 def mlp_model(input_dim, output_dim=2):
     # [CHANGED]: BN 제거, Dropout 완화(0.3→0.10, 0.2→0.05) — 기준모델 안정성/해석성 강화
@@ -101,8 +192,8 @@ def train_model(model, criterion, optimizer, train_loader, val_loader, device, p
         avg_val_loss = val_loss / len(val_loader)
         val_losses.append(avg_val_loss)
         
-        if scheduler is not None:   # [ADDED]
-            scheduler.step(avg_val_loss)
+        # if scheduler is not None:   # [ADDED]
+        #     scheduler.step(avg_val_loss)
 
         print(f"Epoch {epoch+1}/{num_epochs} - Train Loss: {avg_train_loss:.4f}, Val Loss: {avg_val_loss:.4f}")
 
