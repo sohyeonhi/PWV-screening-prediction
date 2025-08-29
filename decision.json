@@ -1,0 +1,28 @@
+{
+  "outer_k": 5,
+  "stability_B": 100,
+  "stability_tau": 0.62,
+  "threshold_range": [
+    0.45,
+    0.55
+  ],
+  "threshold_mode": "youden",
+  "recommended_arm": "B",
+  "recommended_C": "OFF",
+  "final_threshold": 0.49000000000000005,
+  "outer_mean_auc": 0.7320054583098061,
+  "outer_mean_f1_fixed": 0.6796772774753971,
+  "outer_mean_f1_best": 0.7131892938405653,
+  "outer_mean_gap": 0.05835613439101246,
+  "outer_overfit_rate": 0.6,
+  "jaccard_mean": 0.7982957393483708,
+  "test_auc": 0.7055555555555556,
+  "test_f1": 0.631578947368421,
+  "test_gap": 0.11583047550684034,
+  "test_overfit_flag": 1,
+  "n_final_features": 14,
+  "gap_cutoff": 0.15,
+  "overfit_rate_cutoff": 0.4,
+  "filter_pass_gap": 1,
+  "filter_pass_overfit_rate": 0
+}
